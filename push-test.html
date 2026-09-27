@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IronFit – Push Test</title>
+<meta name="theme-color" content="#0d1117">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<!-- Same OneSignal setup as index.html. The secret API key is NOT here — only /api/push has it. -->
+<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+<script>
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+  window.__osInit = { done: false, error: null };
+  OneSignalDeferred.push(async function (OneSignal) {
+    try {
+      await OneSignal.init({ appId: "a62c7e50-da50-47cf-87c8-a3866107bf6e" });
+    } catch (e) {
+      window.__osInit.error = (e && e.message) || String(e);
+    } finally {
+      window.__osInit.done = true;
+      document.dispatchEvent(new Event('os-init-done'));
+    }
+  });
+</script>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--line:#30363d;--text:#e6edf3;--muted:#8b949e;--red:#e63946;--ok:#22c55e;--bad:#f87171;--warn:#fbbf24}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  main{max-width:720px;margin:0 auto;padding:20px 16px 60px}
+  h1{font-size:1.5rem;margin:0 0 4px;letter-spacing:.5px}
+  h1 span{color:var(--red)}
+  .sub{color:var(--muted);margin:0 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px}
+  .card h2{font-size:1rem;margin:0 0 8px;display:flex;align-items:center;gap:8px}
+  .num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;font-size:.75rem;font-weight:700;flex-shrink:0}
+  .row{display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:.9rem}
+  .row:last-child{border-bottom:none}
+  .row .k{color:var(--muted)}
+  .row .v{text-align:right;overflow-wrap:anywhere}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  button{background:var(--red);color:#fff;border:none;border-radius:8px;padding:11px 14px;font-weight:700;font-size:.9rem;width:100%;margin-top:10px;cursor:pointer}
+  button.secondary{background:transparent;border:1px solid var(--line);color:var(--text)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .hint{font-size:.85rem;color:var(--muted);margin-top:8px}
+  .result{font-size:.9rem;margin-top:8px}
+  textarea{width:100%;min-height:150px;background:#0b0f14;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace}
+  a{color:#60a5fa}
+</style>
+</head>
+<body>
+<main>
+  <h1>IRON<span>FIT</span> push test</h1>
+  <p class="sub">Checks every step between this phone and OneSignal. Open it in <b>Chrome</b> on the phone you want notifications on, while logged in to IronFit in the same browser.</p>
+
+  <div class="card">
+    <h2><span class="num">1</span>Browser &amp; site</h2>
+    <div id="envRows"></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="num">2</span>OneSignal &amp; account</h2>
+    <div id="osRows"><div class="row"><span class="k">OneSignal</span><span class="v warn">loading…</span></div></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="num">3</span>Permission &amp; registration</h2>
+    <div id="subRows"></div>
+    <button id="btnSubscribe" onclick="subscribeDevice()">Allow notifications on this device</button>
+    <button id="btnReregister" class="secondary" onclick="reregister()">Re-register this device</button>
+    <div class="hint">Re-register if tests say the device is registered but nothing arrives (clears a stale push token).</div>
+  </div>
+
+  <div class="card">
+    <h2><span class="num">4</span>Test A — can this phone show a notification at all?</h2>
+    <div class="hint">Shows a notification directly from this site, without OneSignal's servers. If this one does not appear, the problem is the phone's settings, not the app.</div>
+    <button id="btnLocal" onclick="localTest()">Show a local test notification</button>
+    <div class="result" id="localResult"></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="num">5</span>Test B — real push through OneSignal</h2>
+    <div class="hint">Sends a real push to <b>this device</b> through your server (<code>/api/push</code>) and OneSignal, then shows OneSignal's delivery report. Tip: after tapping, press the Home button — some phones only show a pop-up when the browser is in the background.</div>
+    <button id="btnPush" onclick="serverTest()">Send a real push to this device</button>
+    <div class="result" id="pushResult"></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="num">6</span>Devices registered to this account</h2>
+    <button id="btnDevices" class="secondary" onclick="listDevices()">Show registered devices</button>
+    <div class="result" id="devicesResult"></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="num">7</span>Report</h2>
+    <div class="hint">Copy this and send it if you need help. It contains no passwords or keys.</div>
+    <textarea id="report" readonly></textarea>
+    <button class="secondary" onclick="copyReport()">Copy report</button>
+  </div>
+
+  <p class="hint"><a href="./">← Back to IronFit</a></p>
+</main>
+
+<script>
+/* ---------------- helpers ---------------- */
+const $ = id => document.getElementById(id);
+const SENDER = '/api/push';
+const log = [];
+function note(line) { log.push(new Date().toLocaleTimeString() + '  ' + line); renderReport(); }
+function row(k, v, cls) {
+  const d = document.createElement('div'); d.className = 'row';
+  const a = document.createElement('span'); a.className = 'k'; a.textContent = k;
+  const b = document.createElement('span'); b.className = 'v ' + (cls || ''); b.textContent = v;
+  d.append(a, b); return d;
+}
+function setRows(id, rows) { const el = $(id); el.replaceChildren(...rows.map(r => row(...r))); }
+function say(id, text, cls) { const el = $(id); el.className = 'result ' + (cls || ''); el.textContent = text; }
+async function callSender(body) {
+  const r = await fetch(SENDER, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status + (r.status === 404 ? ' — is the api folder deployed?' : '')));
+  return data;
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const short = id => id ? String(id).slice(0, 8) + '…' : '-';   // reports never contain full device ids
+
+/* ---------------- state ---------------- */
+const info = {};
+function session() { try { return JSON.parse(localStorage.getItem('ifg_session') || 'null'); } catch { return null; } }
+
+/* ---------------- 1. environment ---------------- */
+function checkEnv() {
+  const ua = navigator.userAgent;
+  const inApp = /FBAN|FBAV|FB_IAB|Messenger|Instagram|Line\//i.test(ua);
+  const ios = /iPhone|iPad|iPod/i.test(ua);
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  Object.assign(info, {
+    https: location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname),
+    notificationApi: 'Notification' in window, serviceWorker: 'serviceWorker' in navigator, pushManager: 'PushManager' in window,
+    inApp, ios, standalone, origin: location.origin, ua
+  });
+  const rows = [
+    ['Address', location.origin, info.https ? 'ok' : 'bad'],
+    ['HTTPS', info.https ? 'yes' : 'NO — push needs https://', info.https ? 'ok' : 'bad'],
+    ['Opened in', inApp ? 'Messenger/Facebook in-app browser — open in Chrome instead' : 'normal browser', inApp ? 'bad' : 'ok'],
+    ['Notifications supported', info.notificationApi && info.serviceWorker && info.pushManager ? 'yes' : 'NO', info.notificationApi && info.serviceWorker && info.pushManager ? 'ok' : 'bad']
+  ];
+  if (ios) rows.push(['iPhone Home Screen app', standalone ? 'yes' : 'NO — Share → Add to Home Screen, open from the icon', standalone ? 'ok' : 'bad']);
+  setRows('envRows', rows);
+  note(`env https=${info.https} inApp=${inApp} ios=${ios} standalone=${standalone} notif=${info.notificationApi} sw=${info.serviceWorker} push=${info.pushManager}`);
+  note('userAgent ' + ua);
+}
+
+/* ---------------- 2 + 3. OneSignal state ---------------- */
+let OS = null;
+async function swInfo() {
+  if (!('serviceWorker' in navigator)) return { list: [], os: null };
+  const regs = await navigator.serviceWorker.getRegistrations();
+  const list = regs.map(r => ({ scope: r.scope, script: (r.active || r.waiting || r.installing || {}).scriptURL || '', active: !!r.active }));
+  const os = regs.find(r => /OneSignalSDKWorker/i.test(((r.active || r.waiting || r.installing) || {}).scriptURL || '')) || null;
+  return { list, os };
+}
+async function refresh() {
+  const s = session();
+  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  const sw = await swInfo();
+  info.permission = perm; info.sw = sw.list; info.swOk = !!(sw.os && sw.os.active);
+  info.user = s ? { id: s.id, name: s.name, role: s.role } : null;
+  if (OS) {
+    info.subId = OS.User.PushSubscription.id || null;
+    info.optedIn = !!OS.User.PushSubscription.optedIn;
+    info.hasToken = !!OS.User.PushSubscription.token;
+    info.externalId = OS.User.externalId || null;
+  }
+  const expectedExt = s ? 'ifg_' + s.id : null;
+  setRows('osRows', [
+    ['OneSignal SDK', !window.__osInit.done ? 'loading…' : window.__osInit.error ? 'FAILED: ' + window.__osInit.error : 'started', !window.__osInit.done ? 'warn' : window.__osInit.error ? 'bad' : 'ok'],
+    ['IronFit login in this browser', s ? `${s.name} (${s.role})` : 'not logged in — log in to the app first, then reload this page', s ? 'ok' : 'bad'],
+    ['Linked to account', !OS ? '—' : info.externalId && info.externalId === expectedExt ? info.externalId : (info.externalId || 'not linked') + (expectedExt ? ' (should be ' + expectedExt + ')' : ''), info.externalId && info.externalId === expectedExt ? 'ok' : 'warn']
+  ]);
+  setRows('subRows', [
+    ['Browser permission', perm === 'granted' ? 'allowed' : perm === 'denied' ? 'BLOCKED — tap the icon left of the address → Permissions → Notifications → Allow, then reload' : perm === 'default' ? 'not asked yet' : 'unsupported', perm === 'granted' ? 'ok' : 'bad'],
+    ['Service worker', info.swOk ? 'OneSignalSDKWorker.js active' : sw.list.length ? 'other worker only: ' + sw.list.map(x => x.script.split('/').pop()).join(', ') : 'none yet (appears after allowing)', info.swOk ? 'ok' : 'warn'],
+    ['Registered with OneSignal', !OS ? '—' : info.subId && info.optedIn && info.hasToken ? 'yes (' + info.subId.slice(0, 8) + '…)' : info.subId ? 'subscription exists but ' + (!info.optedIn ? 'opted out' : 'no push token') : 'no', info.subId && info.optedIn && info.hasToken ? 'ok' : 'bad']
+  ]);
+  $('btnPush').disabled = !(OS && info.subId && info.optedIn && s);
+  $('btnDevices').disabled = !s;
+  renderReport();
+}
+
+async function subscribeDevice() {
+  if (!OS) { alert('OneSignal has not started yet — see step 2.'); return; }
+  try {
+    note('requestPermission…');
+    if (!OS.Notifications.permission) await OS.Notifications.requestPermission();
+    if (OS.Notifications.permission && !OS.User.PushSubscription.optedIn) await OS.User.PushSubscription.optIn();
+    const s = session(); if (s) await OS.login('ifg_' + s.id);
+    note('after subscribe: permission=' + OS.Notifications.permission + ' optedIn=' + OS.User.PushSubscription.optedIn + ' sub=' + short(OS.User.PushSubscription.id));
+  } catch (e) { note('subscribe error: ' + ((e && e.message) || e)); alert('Error: ' + ((e && e.message) || e)); }
+  await sleep(1500); refresh();
+}
+async function reregister() {
+  if (!OS) return;
+  try {
+    note('re-register: optOut → optIn');
+    await OS.User.PushSubscription.optOut(); await sleep(1000);
+    await OS.User.PushSubscription.optIn(); await sleep(1500);
+    const s = session(); if (s) await OS.login('ifg_' + s.id);
+    note('re-registered: sub=' + short(OS.User.PushSubscription.id) + ' optedIn=' + OS.User.PushSubscription.optedIn);
+  } catch (e) { note('re-register error: ' + ((e && e.message) || e)); }
+  refresh();
+}
+
+/* ---------------- 4. local notification ---------------- */
+async function localTest() {
+  if (!('Notification' in window)) return say('localResult', '❌ This browser cannot show notifications.', 'bad');
+  if (Notification.permission !== 'granted') return say('localResult', '⚠️ Allow notifications first (step 3).', 'warn');
+  try {
+    const sw = await swInfo();
+    // Always via the service worker — Android Chrome forbids new Notification()
+    const reg = (sw.os && sw.os.active) ? sw.os : (await navigator.serviceWorker.getRegistrations()).find(r => r.active);
+    if (!reg) return say('localResult', '⚠️ No service worker on this phone yet — tap "Allow notifications on this device" in step 3 first.', 'warn');
+    const opts = { body: 'If you can see this, the phone can show notifications from this site.', icon: 'icon-192.png', badge: 'icon-192.png', tag: 'ironfit-local-test', renotify: true };
+    await reg.showNotification('✅ IronFit local test', opts);
+    note('local notification shown via service worker ' + reg.scope);
+    say('localResult', '✅ Shown. Did it appear? If NOT: Android Settings → Apps → Chrome → Notifications → turn on, and allow pop-ups for this site\'s category. Also check Do Not Disturb. If it DID appear, the phone is fine — go to Test B.', 'ok');
+  } catch (e) {
+    note('local notification error: ' + ((e && e.message) || e));
+    say('localResult', '❌ ' + ((e && e.message) || e), 'bad');
+  }
+}
+
+/* ---------------- 5. real push + delivery report ---------------- */
+async function serverTest() {
+  const s = session(); if (!s || !OS) return;
+  const btn = $('btnPush'); btn.disabled = true;
+  try {
+    say('pushResult', 'Sending…');
+    const d = await callSender({ type: 'test', userId: String(s.id), subscriptionId: OS.User.PushSubscription.id });
+    note('test push response: id=' + (d.id || '-') + (d.detail ? ' detail=' + d.detail : ''));
+    if (!d.id) { say('pushResult', '⚠️ OneSignal did not accept it for this device: ' + (d.detail || 'no subscribed device') + '. Tap "Re-register this device" and try again.', 'warn'); return; }
+    say('pushResult', '📨 Sent (message ' + d.id.slice(0, 8) + '…). Waiting for OneSignal\'s delivery report…');
+    let st = null;
+    for (let i = 0; i < 10; i++) {
+      await sleep(3000);
+      try { st = await callSender({ type: 'status', notificationId: d.id }); } catch (e) { note('status error: ' + e.message); break; }
+      note(`status: successful=${st.successful} failed=${st.failed} errored=${st.errored} received=${st.received} remaining=${st.remaining}`);
+      if (st.completed_at || st.failed || st.errored || st.received) break;
+    }
+    if (!st) { say('pushResult', '📨 Sent, but the delivery report could not be read.', 'warn'); return; }
+    let msg, cls;
+    if (st.failed > 0) { msg = '❌ OneSignal says this device is no longer subscribed (failed). Tap "Re-register this device", then try again.'; cls = 'bad'; }
+    else if (st.errored > 0) { msg = '❌ The push service returned an error for this device. Tap "Re-register this device" and try again; if it repeats, check OneSignal → Settings → Push & In-App → Web.'; cls = 'bad'; }
+    else if (st.received > 0) { msg = '✅ Your phone confirmed it RECEIVED the push. If you did not see it, the phone is hiding it: allow Chrome notifications / pop-ups in Android settings, turn off Do Not Disturb, and set Chrome battery to "No restrictions".'; cls = 'ok'; }
+    else if (st.successful > 0) { msg = '✅ Delivered to Google\'s push service. It should appear within seconds. If it never does: set Chrome\'s battery to "No restrictions" (Xiaomi/Oppo/Vivo/Realme), allow notifications for Chrome, and check Do Not Disturb.'; cls = 'ok'; }
+    else { msg = '⏳ Still queued at OneSignal. Wait a minute and check OneSignal → Messages.'; cls = 'warn'; }
+    say('pushResult', `${msg}\n\nReport: successful ${st.successful ?? '-'}, received ${st.received ?? '-'}, failed ${st.failed ?? '-'}, errored ${st.errored ?? '-'}`, cls);
+    $('pushResult').style.whiteSpace = 'pre-line';
+  } catch (e) {
+    note('test push error: ' + e.message);
+    say('pushResult', '❌ ' + e.message, 'bad');
+  } finally { btn.disabled = false; }
+}
+
+/* ---------------- 6. devices ---------------- */
+async function listDevices() {
+  const s = session(); if (!s) return;
+  try {
+    const d = await callSender({ type: 'devices', userId: String(s.id) });
+    const mine = OS && OS.User.PushSubscription.id ? OS.User.PushSubscription.id.slice(0, 8) : '';
+    note('devices for ' + d.externalId + ': ' + JSON.stringify(d.devices));
+    if (!d.devices.length) return say('devicesResult', 'No devices are registered for ' + d.externalId + ' yet. Do step 3 on your phone.', 'warn');
+    const lines = d.devices.map(x => `${x.idStart === mine ? '👉 THIS DEVICE — ' : ''}${x.type} ${x.device_model || ''} ${x.device_os || ''} · ${x.enabled ? 'subscribed' : 'NOT subscribed'}${x.notification_types != null && x.notification_types < 1 ? ' (code ' + x.notification_types + ')' : ''}`);
+    const el = $('devicesResult'); el.className = 'result'; el.style.whiteSpace = 'pre-line';
+    el.textContent = lines.join('\n') + (mine && !d.devices.some(x => x.idStart === mine) ? '\n\n⚠️ This device is not in the list — tap "Allow notifications" / "Re-register" in step 3.' : '');
+  } catch (e) { say('devicesResult', '❌ ' + e.message, 'bad'); }
+}
+
+/* ---------------- 7. report ---------------- */
+function renderReport() {
+  const summary = {
+    origin: info.origin, https: info.https, inAppBrowser: info.inApp, ios: info.ios, standalone: info.standalone,
+    oneSignalInit: window.__osInit.done ? (window.__osInit.error || 'ok') : 'loading',
+    permission: info.permission, serviceWorkers: info.sw, oneSignalWorkerActive: info.swOk,
+    subscription: info.subId ? info.subId.slice(0, 8) + '…' : null, optedIn: info.optedIn, hasPushToken: info.hasToken,
+    externalId: info.externalId, user: info.user ? info.user.role + ' ' + info.user.id : null
+  };
+  $('report').value = JSON.stringify(summary, null, 2) + '\n\n' + log.join('\n');
+}
+async function copyReport() {
+  try { await navigator.clipboard.writeText($('report').value); alert('Report copied.'); }
+  catch { $('report').select(); document.execCommand('copy'); alert('Report copied.'); }
+}
+
+/* ---------------- start ---------------- */
+window.addEventListener('error', e => { if (/onesignal/i.test(String(e.message) + String(e.filename))) note('page error: ' + e.message); });
+window.addEventListener('unhandledrejection', e => { const m = (e.reason && e.reason.message) || String(e.reason); if (/onesignal|service ?worker|push/i.test(m)) note('promise error: ' + m); });
+checkEnv();
+refresh();
+window.OneSignalDeferred = window.OneSignalDeferred || [];
+window.OneSignalDeferred.push(async function (OneSignal) {
+  if (!window.__osInit.done) await new Promise(r => { document.addEventListener('os-init-done', r, { once: true }); setTimeout(r, 20000); });
+  note('OneSignal init: ' + (window.__osInit.error || 'ok'));
+  if (window.__osInit.error) { refresh(); return; }
+  OS = OneSignal;
+  const s = session();
+  try { if (s && OS.User.externalId !== 'ifg_' + s.id) await OS.login('ifg_' + s.id); } catch (e) { note('login error: ' + ((e && e.message) || e)); }
+  OS.Notifications.addEventListener('permissionChange', refresh);
+  OS.User.PushSubscription.addEventListener('change', refresh);
+  refresh();
+});
+setTimeout(() => { if (!window.__osInit.done) { note('OneSignal SDK did not load within 15s (blocked or offline?)'); refresh(); } }, 15000);
+</script>
+</body>
+</html>

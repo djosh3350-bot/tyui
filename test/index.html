@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Push Test</title>
+<meta name="theme-color" content="#0d1117">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<!-- OneSignal (same App ID as the gym app). The secret API key is NOT in this file — /api/push has it. -->
+<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+<script>
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+  window.osInit = { done: false, error: null };
+  OneSignalDeferred.push(async function (OneSignal) {
+    try {
+      await OneSignal.init({ appId: "a62c7e50-da50-47cf-87c8-a3866107bf6e" });
+    } catch (e) {
+      window.osInit.error = (e && e.message) || String(e);
+    } finally {
+      window.osInit.done = true;
+      document.dispatchEvent(new Event('os-init-done'));
+    }
+  });
+</script>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0d1117;color:#e6edf3;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:24px 16px}
+  .box{width:100%;max-width:420px;text-align:center}
+  h1{font-size:1.4rem;margin:0 0 6px}
+  p{color:#8b949e;margin:0 0 22px;font-size:.95rem}
+  #go{width:100%;padding:18px;border:none;border-radius:14px;background:#e63946;color:#fff;font-size:1.1rem;font-weight:700;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  #go:disabled{opacity:.6}
+  #local{margin-top:12px;padding:10px;background:none;border:none;color:#60a5fa;font-size:.9rem;cursor:pointer;text-decoration:underline;touch-action:manipulation}
+  #steps{list-style:none;padding:0;margin:22px 0 0;text-align:left}
+  #steps li{padding:9px 12px;border-radius:10px;background:#161b22;margin-bottom:6px;font-size:.92rem;white-space:pre-line}
+  .ok{border-left:4px solid #22c55e} .bad{border-left:4px solid #f87171} .wait{border-left:4px solid #fbbf24}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>🔔 Push notification test</h1>
+  <p>Open this page in <b>Chrome</b> on your phone, then tap the button.</p>
+  <button id="go" onclick="runTest()">Send me a test notification</button>
+  <button id="local" onclick="localTest()">Only check if this phone can show notifications</button>
+  <ul id="steps"></ul>
+</div>
+
+<script>
+const SENDER = '/api/push';
+const stepsEl = document.getElementById('steps');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function step(text, cls) { const li = document.createElement('li'); li.className = cls; li.textContent = text; stepsEl.appendChild(li); return li; }
+function update(li, text, cls) { li.className = cls; li.textContent = text; }
+/* Phones only show the permission prompt while the tap is still fresh (~5 s on Android, less on iPhone),
+   so this is called at the very start of the tap — before waiting for OneSignal. */
+function askPermission() {
+  if (!('Notification' in window) || Notification.permission !== 'default') return null;
+  try { return new Promise(res => { const r = Notification.requestPermission(res); if (r && r.then) r.then(res, () => res(Notification.permission)); }); }
+  catch (e) { return null; }
+}
+/* OneSignal's service worker, whatever scope it was registered with (never use new Notification() —
+   Android Chrome forbids it: "Illegal constructor. Use ServiceWorkerRegistration.showNotification()") */
+async function findWorker() {
+  if (!('serviceWorker' in navigator)) return null;
+  const regs = await navigator.serviceWorker.getRegistrations();
+  const url = r => ((r.active || r.waiting || r.installing) || {}).scriptURL || '';
+  return regs.find(r => /OneSignalSDKWorker/i.test(url(r))) || regs.find(r => r.active) || null;
+}
+async function activeWorker(tries = 20) {
+  for (let i = 0; i < tries; i++) { const r = await findWorker(); if (r && r.active) return r; await sleep(500); }
+  return null;
+}
+const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+/* Wait until OneSignal (loaded in <head>) has started */
+let OS = null;
+const osReady = new Promise(resolve => {
+  window.OneSignalDeferred.push(async OneSignal => {
+    if (!window.osInit.done) await new Promise(r => { document.addEventListener('os-init-done', r, { once: true }); setTimeout(r, 20000); });
+    OS = OneSignal; resolve();
+  });
+  setTimeout(resolve, 20000); // SDK blocked or offline
+});
+
+async function runTest() {
+  const btn = document.getElementById('go');
+  stepsEl.innerHTML = '';
+  // 1. Browser checks (instant, so the permission prompt below still counts as part of the tap)
+  if (/FBAN|FBAV|FB_IAB|Messenger|Instagram/i.test(navigator.userAgent)) return step('✗ You opened this inside Messenger/Facebook. Tap ⋮ → "Open in Chrome", then try again.', 'bad');
+  if (location.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(location.hostname)) return step('✗ This page must be opened with https://', 'bad');
+  if (isIOS && !isStandalone) return step('✗ On iPhone/iPad, push only works from the Home Screen app:\n1. Open the site in Safari\n2. Share → Add to Home Screen\n3. Open IronFit from the new icon, then go to /test/', 'bad');
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return step('✗ This browser does not support push notifications. Use Chrome' + (isIOS ? ' (iPhone: iOS 16.4 or newer, from the Home Screen app).' : '.'), 'bad');
+  }
+  const asking = askPermission();          // ask NOW, inside the tap
+  btn.disabled = true;
+  try {
+    step('✓ Browser supports push', 'ok');
+
+    // 2. OneSignal
+    const s2 = step('… Starting OneSignal', 'wait');
+    await osReady;
+    if (!OS || window.osInit.error) return update(s2, '✗ OneSignal did not start: ' + (window.osInit.error || 'SDK blocked or offline') + '\nIn OneSignal → Settings → Push & In-App → Web, the Site URL must be exactly ' + location.origin, 'bad');
+    update(s2, '✓ OneSignal started', 'ok');
+
+    // 3. Permission
+    const s3 = step('… Asking for notification permission', 'wait');
+    if (asking) await asking;
+    if (Notification.permission === 'default' && !OS.Notifications.permission) await OS.Notifications.requestPermission(); // fallback
+    if (Notification.permission !== 'granted' && !OS.Notifications.permission) {
+      return update(s3, Notification.permission === 'denied'
+        ? '✗ Notifications are BLOCKED for this site.\nTap the icon left of the address bar → Permissions → Notifications → Allow, then reload.'
+        : '✗ Permission was not given. Tap the button again and choose Allow.', 'bad');
+    }
+    update(s3, '✓ Notifications allowed', 'ok');
+
+    // 4. Register this phone with OneSignal
+    const s4 = step('… Registering this phone', 'wait');
+    if (!OS.User.PushSubscription.optedIn) await OS.User.PushSubscription.optIn();
+    const worker = await activeWorker(16);   // check the service worker first (up to 8 s)
+    if (!worker) return update(s4, '✗ The push service worker did not install on this phone.\nOpen ' + location.origin + '/OneSignalSDKWorker.js — it must show one line of code. If it shows an error page, OneSignalSDKWorker.js is missing from your Vercel deploy.', 'bad');
+    for (let i = 0; i < 20 && !(OS.User.PushSubscription.id && OS.User.PushSubscription.token); i++) await sleep(500);
+    const subId = OS.User.PushSubscription.id;
+    if (!subId) return update(s4, '✗ OneSignal could not register this phone. Reload the page and try again.', 'bad');
+    update(s4, '✓ Phone registered (' + subId.slice(0, 8) + '…)', 'ok');
+
+    // Link to the IronFit account if you're logged in to the app in this browser (optional)
+    let userId = null;
+    try { const ses = JSON.parse(localStorage.getItem('ifg_session') || 'null'); if (ses && ses.id) { userId = String(ses.id); await OS.login('ifg_' + userId); } } catch (e) {}
+
+    // 5. Send a real push to THIS phone through /api/push (the server has the secret key)
+    const s5 = step('… Sending the test notification', 'wait');
+    const res = await fetch(SENDER, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'test', subscriptionId: subId, ...(userId ? { userId } : {}) }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return update(s5, '✗ Server error: ' + (data.error || 'HTTP ' + res.status) + (res.status === 404 ? '\nIs the api folder deployed on Vercel?' : '\nCheck the environment variables in Vercel, then redeploy.'), 'bad');
+    if (!data.id) return update(s5, '✗ OneSignal refused to send to this phone: ' + (data.detail || 'not subscribed') + '\nReload the page and try again.', 'bad');
+    update(s5, '✓ Sent! Check your notifications now (pull down the notification bar).', 'ok');
+
+    // 6. Ask OneSignal what happened
+    const s6 = step('… Waiting for the delivery report', 'wait');
+    let st = null;
+    for (let i = 0; i < 8; i++) {
+      await sleep(3000);
+      const r = await fetch(SENDER, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'status', notificationId: data.id }) });
+      st = await r.json().catch(() => null);
+      if (!r.ok || !st) { st = null; break; }
+      if (st.completed_at || st.failed || st.errored || st.received) break;
+    }
+    if (!st) return update(s6, 'Could not read the delivery report — just check whether the notification appeared.', 'wait');
+    if (st.failed > 0 || st.errored > 0) return update(s6, '✗ Delivery failed for this phone. Reload the page and tap the button again (it re-registers the phone).', 'bad');
+    if (st.received > 0 || st.successful > 0) {
+      return update(s6, (st.received > 0 ? '✓ Your phone confirmed it received the notification.' : '✓ Delivered to your phone\'s push service.') +
+        '\n\nDon\'t see it? The phone is hiding it:\n• Settings → Apps → Chrome → Notifications → ON (and "Pop on screen")\n• Settings → Apps → Chrome → Battery → No restrictions\n• Turn off Do Not Disturb\n• Tap the blue link above the steps to check the phone can show notifications at all', 'ok');
+    }
+    update(s6, 'Still queued at OneSignal — wait a minute, then check your notifications.', 'wait');
+  } catch (e) {
+    step('✗ ' + ((e && e.message) || e), 'bad');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* Shows a notification straight from this page — no OneSignal servers involved.
+   If this doesn't appear, the phone's settings are blocking notifications. */
+async function localTest() {
+  stepsEl.innerHTML = '';
+  if (isIOS && !isStandalone) return step('✗ On iPhone/iPad this only works from the Home Screen app (Share → Add to Home Screen).', 'bad');
+  if (!('Notification' in window) || !('serviceWorker' in navigator)) return step('✗ This browser cannot show notifications. Use Chrome.', 'bad');
+  const asking = askPermission();          // ask NOW, inside the tap
+  try {
+    if (asking) await asking;
+    if (Notification.permission !== 'granted') return step('✗ Notifications are not allowed for this site.\nTap the icon left of the address bar → Permissions → Notifications → Allow, then reload.', 'bad');
+    let reg = await findWorker();
+    if (!reg || !reg.active) {
+      // Phone not set up yet: let OneSignal install its service worker, then continue
+      const s = step('… Setting up this phone first', 'wait');
+      await osReady;
+      if (OS && !window.osInit.error) { try { await OS.User.PushSubscription.optIn(); } catch (e) {} }
+      reg = await activeWorker();
+      if (!reg) return update(s, '✗ Could not set up this phone: ' + (window.osInit.error || 'the push service worker did not install') + '.\nOpen ' + location.origin + '/OneSignalSDKWorker.js — it must show one line of code.', 'bad');
+      update(s, '✓ Phone set up', 'ok');
+    }
+    await reg.showNotification('✅ Local test', { body: 'Your phone can show notifications from this site.', icon: '/icon-192.png', badge: '/icon-192.png', tag: 'local-test', renotify: true });
+    step('✓ Shown. Pull down your notification bar.\nIf it is NOT there: Settings → Apps → Chrome → Notifications → turn ON (and allow pop-ups), and turn off Do Not Disturb.', 'ok');
+  } catch (e) {
+    step('✗ ' + ((e && e.message) || e), 'bad');
+  }
+}
+</script>
+</body>
+</html>

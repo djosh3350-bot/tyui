@@ -12,6 +12,9 @@
  *   • booked    → instant push to the trainer (and to the member if staff booked it)
  *               → scheduled reminder for both, REMINDER_MINUTES before the session
  *   • cancelled → cancels those reminders and tells the other person
+ *   • test      → "Send me a test notification" button (max once per minute per account)
+ *   • status    → delivery results of a test message (used by push-test.html)
+ *   • devices   → which devices are registered for an account (used by push-test.html)
  *
  * Why a worker? Sending needs your OneSignal App API key, which must never be
  * put in index.html (anyone could read it and push to all your users).
@@ -30,6 +33,7 @@
  */
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FRESH_MS = 15 * 60 * 1000; // only act on bookings/cancellations from the last 15 minutes
 
 export default {
@@ -40,8 +44,14 @@ export default {
     const self = new URL(request.url).origin;
     const allowed = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim().replace(/\/$/, '')).filter(Boolean);
     // The page on the same site is always allowed; other sites only if listed.
+    // Compare host names only: behind Vercel's proxy the request URL can say http:// or use
+    // a different internal address even though the browser is on https://your-site.
     // Requests without an Origin header (not from a browser page) are refused.
-    const originOk = origin === self || allowed.includes(origin);
+    const hostOf = u => { try { return new URL(u).host.toLowerCase(); } catch { return ''; } };
+    const siteHosts = new Set([hostOf(request.url), request.headers.get('x-forwarded-host'), request.headers.get('host')]
+      .filter(Boolean).map(h => h.split(',')[0].trim().toLowerCase()));
+    const originHost = hostOf(origin);
+    const originOk = (!!originHost && siteHosts.has(originHost)) || allowed.includes(origin);
     const cors = {
       'Access-Control-Allow-Origin': originOk && origin ? origin : (allowed[0] || self),
       'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
@@ -70,7 +80,61 @@ export default {
 
     let body;
     try { body = await request.json(); } catch { return reply({ error: 'Invalid JSON' }, 400); }
-    const { type, appointmentId } = body || {};
+    const { type, appointmentId, userId, subscriptionId, notificationId } = body || {};
+
+    // Diagnostics for push-test.html — read-only, no secrets or push tokens are returned
+    if (type === 'status') {
+      if (!UUID_RE.test(notificationId || '')) return reply({ error: 'Bad notification id' }, 400);
+      try {
+        const r = await fetch(`https://api.onesignal.com/notifications/${notificationId}?app_id=${encodeURIComponent(env.ONESIGNAL_APP_ID)}`,
+          { headers: { 'Authorization': 'Key ' + env.ONESIGNAL_API_KEY } });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) return reply({ error: `OneSignal ${r.status}: ${JSON.stringify(d.errors || d)}` }, 502);
+        const pick = ['successful', 'failed', 'errored', 'converted', 'received', 'remaining', 'completed_at', 'platform_delivery_stats'];
+        return reply({ ok: true, ...Object.fromEntries(pick.map(k => [k, d[k] ?? null])) });
+      } catch (e) { return reply({ error: String((e && e.message) || e) }, 502); }
+    }
+    if (type === 'devices') {
+      if (!ID_RE.test(userId || '')) return reply({ error: 'Bad request' }, 400);
+      try {
+        const r = await fetch(`https://api.onesignal.com/apps/${encodeURIComponent(env.ONESIGNAL_APP_ID)}/users/by/external_id/${encodeURIComponent('ifg_' + userId)}`,
+          { headers: { 'Authorization': 'Key ' + env.ONESIGNAL_API_KEY } });
+        if (r.status === 404) return reply({ ok: true, externalId: 'ifg_' + userId, devices: [] });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) return reply({ error: `OneSignal ${r.status}: ${JSON.stringify(d.errors || d)}` }, 502);
+        const devices = (d.subscriptions || []).filter(s => /push/i.test(s.type || '')).map(s => ({
+          idStart: String(s.id || '').slice(0, 8),   // enough to recognise "this device", not enough to target it
+          type: s.type, enabled: !!s.enabled, notification_types: s.notification_types ?? null,
+          device_model: s.device_model || '', device_os: s.device_os || '', sdk: s.sdk || ''
+        }));
+        return reply({ ok: true, externalId: 'ifg_' + userId, devices });
+      } catch (e) { return reply({ error: String((e && e.message) || e) }, 502); }
+    }
+
+    // "Send me a test notification" button: pushes to one existing account, at most once per minute
+    if (type === 'test') {
+      // Two forms: {subscriptionId} = just the device that pressed the button (test/index.html),
+      //            {userId[, subscriptionId]} = an IronFit account's devices (🔔 window in the app)
+      if (subscriptionId && !UUID_RE.test(subscriptionId)) return reply({ error: 'Bad subscription id' }, 400);
+      if (userId && !ID_RE.test(userId)) return reply({ error: 'Bad request' }, 400);
+      if (!userId && !subscriptionId) return reply({ error: 'Bad request' }, 400);
+      try {
+        if (userId) {
+          const r = await fetch(dbUrl(env, `users/${userId}/role`));
+          if (r.status === 401 || r.status === 403) return reply({ error: 'Firebase refused the read — set FIREBASE_AUTH or allow reading users' }, 502);
+          if (!(await r.json().catch(() => null))) return reply({ error: 'Unknown account' }, 404);
+        }
+        const res = await push(env, {
+          to: userId, subscriptionId, key: `test:${subscriptionId || userId}:${Math.floor(Date.now() / 60000)}`, // max 1 per minute
+          title: '🔔 IronFit test notification', text: 'Push notifications work on this device!'
+        });
+        const detail = Array.isArray(res.errors) ? res.errors.join('; ') : res.errors ? JSON.stringify(res.errors) : '';
+        return reply({ ok: true, id: res.id, detail });
+      } catch (e) {
+        return reply({ error: String((e && e.message) || e) }, 502);
+      }
+    }
+
     if (!['booked', 'cancelled'].includes(type) || !ID_RE.test(appointmentId || '')) {
       return reply({ error: 'Bad request' }, 400);
     }
@@ -160,15 +224,19 @@ async function saveReminderIds(env, id, ids) {
 }
 
 /* ---------- OneSignal ---------- */
-async function push(env, { to, key, title, text, sendAfter }) {
+async function push(env, { to, subscriptionId, key, title, text, sendAfter }) {
   const payload = {
     app_id: env.ONESIGNAL_APP_ID,
-    target_channel: 'push',
-    include_aliases: { external_id: ['ifg_' + to] }, // the website logs devices in as "ifg_<userKey>"
     headings: { en: title },
     contents: { en: text },
     idempotency_key: await uuidFrom(key)             // same request twice = one notification
   };
+  if (subscriptionId) {
+    payload.include_subscription_ids = [subscriptionId]; // one specific device
+  } else {
+    payload.target_channel = 'push';
+    payload.include_aliases = { external_id: ['ifg_' + to] }; // the website logs devices in as "ifg_<userKey>"
+  }
   if (env.SITE_URL) payload.url = env.SITE_URL;
   if (sendAfter) payload.send_after = sendAfter;
   const r = await fetch('https://api.onesignal.com/notifications?c=push', {
